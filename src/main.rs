@@ -1,10 +1,11 @@
-use std::io;
 use std::cmp::Ordering;
 use std::path::Path;
 
 use gdal::raster::{Dataset, Driver, RasterBand};
 use gdal::raster::dataset::GeoTransform;
 use gdal::raster::types::GdalType;
+
+use gdal_sys::GDALDataType;
 
 use clap::{App, Arg};
 
@@ -24,6 +25,11 @@ impl Ord for ValidF64 {
 }
 
 impl Eq for ValidF64 {}
+
+struct OutputOptions {
+    filename: String,
+    format: String,
+}
 
 #[derive(Debug)]
 struct GeoError {
@@ -157,15 +163,16 @@ fn apply_geotransform(gt: GeoTransform, xpx: isize, ypx: isize) -> (f64, f64) {
     (x, y)
 }
 
-fn ply_bands<T: Copy + GdalType>(filename: &str,
-             swath: Swath,
-             projection: String,
-             band1: &RasterBand,
-             band2: &RasterBand,
-             band3: &RasterBand) -> Result<Dataset, io::Error> {
-    let driver = Driver::get("JPEG").unwrap();
+fn ply_bands<T: Copy + GdalType>(
+            output: &OutputOptions,
+            swath: Swath,
+            projection: String,
+            band1: &RasterBand,
+            band2: &RasterBand,
+            band3: &RasterBand) -> Result<Dataset, GeoError> {
+    let driver = Driver::get(&output.format).unwrap();
 
-    let ds = driver.create_with_band_type::<T>(filename,
+    let ds = driver.create_with_band_type::<T>(&output.filename,
                                                swath.nx.abs(),
                                                swath.ny.abs(),
                                                3).expect("failed to create output dataset");
@@ -195,33 +202,41 @@ fn main() {
                 .arg(Arg::with_name("red")
                      .short("r")
                      .long("red")
-                     .value_name("GEOTIFF")
+                     .value_name("INPUT")
                      .help("Source of red channel")
-                     .required(true))
+                     .required(true)
+                     .display_order(1))
                 .arg(Arg::with_name("green")
                      .short("g")
                      .long("green")
-                     .value_name("GEOTIFF")
+                     .value_name("INPUT")
                      .help("Source of green channel")
-                     .required(true))
+                     .required(true)
+                     .display_order(2))
                 .arg(Arg::with_name("blue")
                      .short("b")
                      .long("blue")
-                     .value_name("GEOTIFF")
+                     .value_name("INPUT")
                      .help("Source of blue channel")
-                     .required(true))
+                     .required(true)
+                     .display_order(3))
                 .arg(Arg::with_name("output")
                      .short("o")
                      .long("output")
-                     .value_name("GEOTIFF")
+                     .value_name("INPUT")
                      .help("Output file")
                      .required(false))
+                .arg(Arg::with_name("output_format")
+                     .long("output-format")
+                     .value_name("FORMAT")
+                     .help("Output format driver"))
                 .get_matches();
 
     let red_input = cli.value_of("red").unwrap();
     let green_input = cli.value_of("green").unwrap();
     let blue_input = cli.value_of("blue").unwrap();
-    let output = cli.value_of("output").unwrap_or("out.tif");
+    let output = cli.value_of("output").unwrap_or("out");
+    let output_format = cli.value_of("output_format").unwrap_or("GTIFF");
 
     let red_ds = Dataset::open(Path::new(red_input)).expect("failed to open red dataset!");
     let green_ds = Dataset::open(Path::new(green_input)).expect("failed to open green dataset!");
@@ -235,10 +250,35 @@ fn main() {
 
     let swath = intersection(&[&red_band, &green_band, &blue_band]).unwrap();
 
-    ply_bands::<u16>(output, swath, proj, &red_band, &green_band, &blue_band).unwrap();
+    let output_options = OutputOptions{
+        filename: output.to_string(),
+        format: output_format.to_string(),
+    };
+
+    let pixel_type = red_band.band_type();
+
+    let result = match pixel_type {
+        GDALDataType::GDT_Byte =>
+            ply_bands::<u8>(&output_options, swath, proj, &red_band, &green_band, &blue_band),
+        GDALDataType::GDT_UInt16 =>
+            ply_bands::<u16>(&output_options, swath, proj, &red_band, &green_band, &blue_band),
+        GDALDataType::GDT_UInt32 =>
+            ply_bands::<u32>(&output_options, swath, proj, &red_band, &green_band, &blue_band),
+        GDALDataType::GDT_Int16 =>
+            ply_bands::<i16>(&output_options, swath, proj, &red_band, &green_band, &blue_band),
+        GDALDataType::GDT_Int32 =>
+            ply_bands::<i32>(&output_options, swath, proj, &red_band, &green_band, &blue_band),
+        GDALDataType::GDT_Float32 =>
+            ply_bands::<f32>(&output_options, swath, proj, &red_band, &green_band, &blue_band),
+        GDALDataType::GDT_Float64 =>
+            ply_bands::<f64>(&output_options, swath, proj, &red_band, &green_band, &blue_band),
+        _ => Err(GeoError{msg: format!("Unhandled band type {}", pixel_type).to_string()}),
+    };
+
+    result.unwrap();
+
 
     // TODO:
-    // - get right output type
     // - windowed read/write
     // - inputs in different projections
 }
