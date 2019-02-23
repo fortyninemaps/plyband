@@ -10,11 +10,11 @@ use gdal_sys::GDALDataType;
 use clap::{App, Arg};
 
 #[derive(PartialEq, PartialOrd, Clone, Copy)]
-struct ValidF64 {
+struct RealF64 {
     v: f64,
 }
 
-impl Ord for ValidF64 {
+impl Ord for RealF64 {
     fn cmp(&self, other: &Self) -> Ordering {
         if self.v.is_nan() {
             Ordering::Equal
@@ -24,7 +24,7 @@ impl Ord for ValidF64 {
     }
 }
 
-impl Eq for ValidF64 {}
+impl Eq for RealF64 {}
 
 struct OutputOptions {
     filename: String,
@@ -59,43 +59,43 @@ impl Swath {
         }
     }
 
-    fn corners(&self) -> Vec<(ValidF64, ValidF64)> {
+    fn corners(&self) -> Vec<(RealF64, RealF64)> {
         let pt0 = apply_geotransform(self.gt, 0, 0);
         let pt1 = apply_geotransform(self.gt, self.nx, 0);
         let pt2 = apply_geotransform(self.gt, self.nx, self.ny);
         let pt3 = apply_geotransform(self.gt, 0, self.ny);
-        vec![pt0, pt1, pt2, pt3].iter().map(|pt| (ValidF64{v: pt.0}, ValidF64{v: pt.1})).collect()
+        vec![pt0, pt1, pt2, pt3].iter().map(|pt| (RealF64{v: pt.0}, RealF64{v: pt.1})).collect()
     }
 
-    fn left_extreme(&self) -> ValidF64 {
+    fn left_extreme(&self) -> RealF64 {
         let pts = self.corners();
         let extreme = pts.iter().min_by_key(|a| a.0).unwrap();
         extreme.0
     }
 
-    fn right_extreme(&self) -> ValidF64 {
+    fn right_extreme(&self) -> RealF64 {
         let pts = self.corners();
         let extreme = pts.iter().max_by_key(|a| a.0).unwrap();
         extreme.0
     }
 
-    fn bottom_extreme(&self) -> ValidF64 {
+    fn bottom_extreme(&self) -> RealF64 {
         let pts = self.corners();
         let extreme = pts.iter().min_by_key(|a| a.1).unwrap();
         extreme.1
     }
 
-    fn top_extreme(&self) -> ValidF64 {
+    fn top_extreme(&self) -> RealF64 {
         let pts = self.corners();
         let extreme = pts.iter().max_by_key(|a| a.1).unwrap();
         extreme.1
     }
 }
 
-type Point = (ValidF64, ValidF64);
+type Point = (RealF64, RealF64);
 
 // Pixel size needed to include a point given a geo_transform
-fn imsize(gt: GeoTransform, pt: &Point) -> (isize, isize) {
+fn invert_geotransform(gt: GeoTransform, pt: &Point) -> (f64, f64) {
     let a = gt[0];
     let b = gt[1];
     let c = gt[2];
@@ -109,13 +109,20 @@ fn imsize(gt: GeoTransform, pt: &Point) -> (isize, isize) {
     if b != 0.0 {
         let ny = (b*y - b*d - e*x + e*a) / (b*f - e*c);
         let nx = (x - a - ny*c) / b;
-        // TODO: ceil incorrect when negative
-        (nx.ceil() as isize, ny.ceil() as isize)
+        (nx, ny)
     } else {
         let ny = (e*x - e*a - b*y + b*d) / (e*c - b*f);
         let nx = (y - d - ny*f) / e;
-        (nx.ceil() as isize, ny.ceil() as isize)
+        (nx, ny)
     }
+}
+
+
+// Pixel size needed to include a point given a geo_transform
+fn imsize(gt: GeoTransform, pt: &Point) -> (isize, isize) {
+    let (nx, ny) = invert_geotransform(gt, pt);
+    // TODO: ceil incorrect when negative
+    (nx.ceil() as isize, ny.ceil() as isize)
 }
 
 // Return the rectangular swatch representing the intersection of a sequence of
@@ -128,10 +135,10 @@ fn intersection(bands: &[&RasterBand]) -> Result<Swath, GeoError> {
 
     let swaths: Vec<Swath> = bands.iter().map(|b| Swath::from_band(b)).collect();
 
-    let left: Vec<ValidF64> = swaths.iter().map(|b| b.left_extreme()).collect();
-    let right: Vec<ValidF64> = swaths.iter().map(|b| b.right_extreme()).collect();
-    let bottom: Vec<ValidF64> = swaths.iter().map(|b| b.bottom_extreme()).collect();
-    let top: Vec<ValidF64> = swaths.iter().map(|b| b.top_extreme()).collect();
+    let left: Vec<RealF64> = swaths.iter().map(|b| b.left_extreme()).collect();
+    let right: Vec<RealF64> = swaths.iter().map(|b| b.right_extreme()).collect();
+    let bottom: Vec<RealF64> = swaths.iter().map(|b| b.bottom_extreme()).collect();
+    let top: Vec<RealF64> = swaths.iter().map(|b| b.top_extreme()).collect();
 
     let rightmost_left = left.iter().max().unwrap();
     let leftmost_right = right.iter().max().unwrap();
@@ -192,6 +199,70 @@ fn ply_bands<T: Copy + GdalType>(
     Ok(ds)
 }
 
+fn all_same<I, T>(things: I) -> bool
+where
+    I: Iterator<Item = T>,
+    T: Eq,
+{
+    let mut last: Option<T> = None;
+    for thing in things {
+        let same = match last {
+            Some(t) => t == thing,
+            None => true
+        };
+        if !same {
+            return false;
+        }
+        last = Some(thing);
+    }
+    true
+}
+
+fn have_same_projection(datasets: &[&Dataset]) -> Result<(), String> {
+    let projs = datasets.iter().map(|ds| ds.projection());
+    if all_same(projs) {
+        Ok(())
+    } else {
+        Err("Different projections".to_string())
+    }
+}
+
+fn gt_compatible(gt1: GeoTransform, gt2: GeoTransform) -> Result<(), String> {
+    let spacing_check = if gt1[1] == gt2[1] && gt1[2] == gt2[2] && gt1[4] == gt2[4] && gt1[5] == gt2[5] {
+        Ok(())
+    } else {
+        return Err("non-equal spacing".to_string());
+    };
+
+    // check for integer solutions to initial offsets
+    let offset_check = {
+        let origin2 = (RealF64{v: gt2[0]}, RealF64{v: gt2[3]});
+        let (nx, ny) = invert_geotransform(gt1, &origin2);
+
+        if (nx % 1.0 == 0.0) && (ny % 1.0 == 0.0) {
+            Ok(())
+        } else {
+            return Err("grids offset".to_string());
+        }
+    };
+
+    spacing_check.and_then(|_| offset_check)
+}
+
+fn have_compatible_geotransforms(datasets: &[&Dataset]) -> Result<(), String> {
+    if datasets.len() == 0 {
+        return Err("empty dataset list".to_string());
+    }
+    for (i, dataset) in datasets.iter().enumerate() {
+        if i != 0 {
+            if gt_compatible(datasets[i-1].geo_transform().unwrap(), dataset.geo_transform().unwrap()).is_err() {
+                return Err("mismatching geotransforms".to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
 
 fn main() {
 
@@ -241,6 +312,13 @@ fn main() {
     let red_ds = Dataset::open(Path::new(red_input)).expect("failed to open red dataset!");
     let green_ds = Dataset::open(Path::new(green_input)).expect("failed to open green dataset!");
     let blue_ds = Dataset::open(Path::new(blue_input)).expect("failed to open blue dataset!");
+
+    let datasets = &[&red_ds, &green_ds, &blue_ds];
+
+    // Input validation
+    have_same_projection(datasets)
+        .and_then(|_| have_compatible_geotransforms(datasets))
+        .unwrap();
 
     let red_band = red_ds.rasterband(1).unwrap();
     let green_band = green_ds.rasterband(1).unwrap();
