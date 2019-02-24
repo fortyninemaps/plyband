@@ -26,6 +26,8 @@ impl Ord for RealF64 {
 
 impl Eq for RealF64 {}
 
+type Point = (RealF64, RealF64);
+
 struct OutputOptions {
     filename: String,
     format: String,
@@ -34,6 +36,43 @@ struct OutputOptions {
 #[derive(Debug)]
 struct GeoError {
     msg: String,
+}
+
+trait Transform2 {
+    fn apply(&self, pos: (isize, isize)) -> (f64, f64);
+    fn invert(&self, pt: &Point) -> (f64, f64);
+}
+
+impl Transform2 for GeoTransform {
+    fn apply(&self, pos: (isize, isize)) -> (f64, f64) {
+        let nx = pos.0 as f64;
+        let ny = pos.1 as f64;
+        let x = self[0] + nx * self[1] + ny * self[2];
+        let y = self[3] + nx * self[4] + ny * self[5];
+        (x, y)
+    }
+
+    fn invert(&self, pt: &Point) -> (f64, f64) {
+        let a = self[0];
+        let b = self[1];
+        let c = self[2];
+        let d = self[3];
+        let e = self[4];
+        let f = self[5];
+
+        let x = pt.0.v;
+        let y = pt.1.v;
+
+        if b != 0.0 {
+            let ny = (b * y - b * d - e * x + e * a) / (b * f - e * c);
+            let nx = (x - a - ny * c) / b;
+            (nx, ny)
+        } else {
+            let ny = (e * x - e * a - b * y + b * d) / (e * c - b * f);
+            let nx = (y - d - ny * f) / e;
+            (nx, ny)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -59,10 +98,10 @@ impl Swath {
     }
 
     fn corners(&self) -> Vec<(RealF64, RealF64)> {
-        let pt0 = apply_geotransform(self.gt, 0, 0);
-        let pt1 = apply_geotransform(self.gt, self.nx, 0);
-        let pt2 = apply_geotransform(self.gt, self.nx, self.ny);
-        let pt3 = apply_geotransform(self.gt, 0, self.ny);
+        let pt0 = self.gt.apply((0, 0));
+        let pt1 = self.gt.apply((self.nx, 0));
+        let pt2 = self.gt.apply((self.nx, self.ny));
+        let pt3 = self.gt.apply((0, self.ny));
         vec![pt0, pt1, pt2, pt3]
             .iter()
             .map(|pt| (RealF64 { v: pt.0 }, RealF64 { v: pt.1 }))
@@ -94,34 +133,9 @@ impl Swath {
     }
 }
 
-type Point = (RealF64, RealF64);
-
-// Pixel size needed to include a point given a geo_transform
-fn invert_geotransform(gt: GeoTransform, pt: &Point) -> (f64, f64) {
-    let a = gt[0];
-    let b = gt[1];
-    let c = gt[2];
-    let d = gt[3];
-    let e = gt[4];
-    let f = gt[5];
-
-    let x = pt.0.v;
-    let y = pt.1.v;
-
-    if b != 0.0 {
-        let ny = (b * y - b * d - e * x + e * a) / (b * f - e * c);
-        let nx = (x - a - ny * c) / b;
-        (nx, ny)
-    } else {
-        let ny = (e * x - e * a - b * y + b * d) / (e * c - b * f);
-        let nx = (y - d - ny * f) / e;
-        (nx, ny)
-    }
-}
-
 // Pixel size needed to include a point given a geo_transform
 fn imsize(gt: GeoTransform, pt: &Point) -> (isize, isize) {
-    let (nx, ny) = invert_geotransform(gt, pt);
+    let (nx, ny) = gt.invert(pt);
     // TODO: ceil incorrect when negative
     (nx.ceil() as isize, ny.ceil() as isize)
 }
@@ -173,12 +187,6 @@ fn intersection(bands: &[&RasterBand]) -> Result<Swath, GeoError> {
             proj: proj_fst,
         })
     }
-}
-
-fn apply_geotransform(gt: GeoTransform, xpx: isize, ypx: isize) -> (f64, f64) {
-    let x = gt[0] + xpx as f64 * gt[1] + ypx as f64 * gt[2];
-    let y = gt[3] + xpx as f64 * gt[4] + ypx as f64 * gt[5];
-    (x, y)
 }
 
 fn ply_bands<T: Copy + GdalType>(
@@ -267,7 +275,7 @@ fn gt_compatible(gt1: GeoTransform, gt2: GeoTransform) -> Result<(), String> {
     // check for integer solutions to initial offsets
     let offset_check = {
         let origin2 = (RealF64 { v: gt2[0] }, RealF64 { v: gt2[3] });
-        let (nx, ny) = invert_geotransform(gt1, &origin2);
+        let (nx, ny) = gt1.invert(&origin2);
 
         if (nx % 1.0 == 0.0) && (ny % 1.0 == 0.0) {
             Ok(())
