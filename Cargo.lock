@@ -117,7 +117,7 @@ dependencies = [
 [[package]]
 name = "gdal-typed-rasterband"
 version = "0.1.0"
-source = "git+https://github.com/fortyninemaps/gdal-typed-rasterband#0941d13d451a9e846c8cb561f9a3684d90130c1d"
+source = "git+https://github.com/fortyninemaps/gdal-typed-rasterband#ca6cb429297c57075b37c7ae0307dac228b120eb"
 dependencies = [
  "gdal 0.5.0 (git+https://github.com/fortyninemaps/georust-gdal?branch=public-gdaltype)",
  "gdal-sys 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",

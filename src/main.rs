@@ -1,13 +1,13 @@
 use std::cmp::Ordering;
 use std::path::Path;
 
-use gdal::raster::dataset::GeoTransform;
+use gdal::raster::dataset::{Buffer, GeoTransform};
 use gdal::raster::types::GdalType;
 use gdal::raster::{Dataset, Driver, RasterBand};
 
 use gdal_sys::GDALDataType;
 
-use gdal_typed_rasterband::typed_rasterband::{TypedRasterBand, GdalFrom};
+use gdal_typed_rasterband::typed_rasterband::{GdalFrom, TypeError, TypedRasterBand};
 
 use clap::{App, Arg};
 
@@ -36,8 +36,40 @@ struct OutputOptions {
 }
 
 #[derive(Debug)]
-struct GeoError {
+struct Error {
     msg: String,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.msg)
+    }
+}
+
+impl std::error::Error for Error {
+    fn description(&self) -> &str {
+        &self.msg
+    }
+
+    fn cause(&self) -> Option<&std::error::Error> {
+        None
+    }
+}
+
+impl std::convert::From<TypeError> for Error {
+    fn from(error: TypeError) -> Error {
+        Error {
+            msg: "type mismatch".to_string(),
+        }
+    }
+}
+
+impl std::convert::From<gdal::errors::Error> for Error {
+    fn from(error: gdal::errors::Error) -> Error {
+        Error {
+            msg: "gdal error".to_string(),
+        }
+    }
 }
 
 trait Transform2 {
@@ -144,9 +176,9 @@ impl Swath {
 
 // Return the rectangular swatch representing the intersection of a sequence of
 // RasterBands. The orientation will be according to the first RasterBand.
-fn intersection(bands: &[&RasterBand]) -> Result<Swath, GeoError> {
+fn intersection(bands: &[&RasterBand]) -> Result<Swath, Error> {
     if bands.len() == 0 {
-        return Err(GeoError {
+        return Err(Error {
             msg: "No bands provided".to_string(),
         });
     }
@@ -164,7 +196,7 @@ fn intersection(bands: &[&RasterBand]) -> Result<Swath, GeoError> {
     let lower_top = top.iter().max().unwrap();
 
     if (rightmost_left > leftmost_right) || (upper_bottom > lower_top) {
-        Err(GeoError {
+        Err(Error {
             msg: "No valid intersection between bands".to_string(),
         })
     } else {
@@ -198,7 +230,7 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     band1: &RasterBand,
     band2: &RasterBand,
     band3: &RasterBand,
-) -> Result<Dataset, GeoError> {
+) -> Result<Dataset, Error> {
     let driver = Driver::get(&output.format).unwrap();
 
     let ds = driver
@@ -208,8 +240,10 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     ds.set_projection(&projection).unwrap();
     ds.set_geo_transform(&swath.gt).unwrap();
 
-    let typed1: TypedRasterBand<T> = TypedRasterBand::from_rasterband(band1);
-    let buf = typed1.read_band().unwrap();
+    let buf: Buffer<T> = TypedRasterBand::from_rasterband(band1)
+        .map_err(|e| Error::from(e))
+        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))
+        .unwrap();
     ds.write_raster(
         1,
         (0, 0),
@@ -218,8 +252,10 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     )
     .unwrap();
 
-    let typed2: TypedRasterBand<T> = TypedRasterBand::from_rasterband(band2);
-    let buf = typed2.read_band().unwrap();
+    let buf: Buffer<T> = TypedRasterBand::from_rasterband(band2)
+        .map_err(|e| Error::from(e))
+        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))
+        .unwrap();
     ds.write_raster(
         2,
         (0, 0),
@@ -228,8 +264,10 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     )
     .unwrap();
 
-    let typed3: TypedRasterBand<T> = TypedRasterBand::from_rasterband(band3);
-    let buf = typed3.read_band().unwrap();
+    let buf: Buffer<T> = TypedRasterBand::from_rasterband(band3)
+        .map_err(|e| Error::from(e))
+        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))
+        .unwrap();
     ds.write_raster(
         3,
         (0, 0),
@@ -449,7 +487,7 @@ fn main() {
             &green_band,
             &blue_band,
         ),
-        _ => Err(GeoError {
+        _ => Err(Error {
             msg: format!("Unhandled band type {}", pixel_type).to_string(),
         }),
     };
