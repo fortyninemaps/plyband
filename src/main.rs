@@ -7,6 +7,8 @@ use gdal::raster::{Dataset, Driver, RasterBand};
 
 use gdal_sys::GDALDataType;
 
+use gdal_typed_rasterband::typed_rasterband::{TypedRasterBand, GdalFrom};
+
 use clap::{App, Arg};
 
 #[derive(PartialEq, PartialOrd, Clone, Copy)]
@@ -189,7 +191,7 @@ fn intersection(bands: &[&RasterBand]) -> Result<Swath, GeoError> {
     }
 }
 
-fn ply_bands<T: Copy + GdalType>(
+fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     output: &OutputOptions,
     swath: Swath,
     projection: String,
@@ -206,7 +208,8 @@ fn ply_bands<T: Copy + GdalType>(
     ds.set_projection(&projection).unwrap();
     ds.set_geo_transform(&swath.gt).unwrap();
 
-    let buf = band1.read_band_as::<T>().unwrap();
+    let typed1: TypedRasterBand<T> = TypedRasterBand::from_rasterband(band1);
+    let buf = typed1.read_band().unwrap();
     ds.write_raster(
         1,
         (0, 0),
@@ -215,7 +218,8 @@ fn ply_bands<T: Copy + GdalType>(
     )
     .unwrap();
 
-    let buf = band2.read_band_as::<T>().unwrap();
+    let typed2: TypedRasterBand<T> = TypedRasterBand::from_rasterband(band2);
+    let buf = typed2.read_band().unwrap();
     ds.write_raster(
         2,
         (0, 0),
@@ -224,7 +228,8 @@ fn ply_bands<T: Copy + GdalType>(
     )
     .unwrap();
 
-    let buf = band3.read_band_as::<T>().unwrap();
+    let typed3: TypedRasterBand<T> = TypedRasterBand::from_rasterband(band3);
+    let buf = typed3.read_band().unwrap();
     ds.write_raster(
         3,
         (0, 0),

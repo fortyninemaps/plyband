@@ -10,3 +10,4 @@ clap = "2.32.0"
 # gdal = "0.5.0"
 gdal-sys = "0.2.0"
 gdal = { git = "https://github.com/fortyninemaps/georust-gdal", branch = "public-gdaltype" }
+gdal-typed-rasterband = { git = "https://github.com/fortyninemaps/gdal-typed-rasterband", branch = "master" }
