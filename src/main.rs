@@ -57,9 +57,9 @@ impl std::error::Error for Error {
 }
 
 impl std::convert::From<TypeError> for Error {
-    fn from(error: TypeError) -> Error {
+    fn from(_error: TypeError) -> Error {
         Error {
-            msg: "type mismatch".to_string(),
+            msg: "band TypeError".to_string(),
         }
     }
 }
@@ -67,7 +67,7 @@ impl std::convert::From<TypeError> for Error {
 impl std::convert::From<gdal::errors::Error> for Error {
     fn from(error: gdal::errors::Error) -> Error {
         Error {
-            msg: "gdal error".to_string(),
+            msg: format!("GdalError {}", error)
         }
     }
 }
@@ -237,44 +237,38 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
         .create_with_band_type::<T>(&output.filename, swath.nx.abs(), swath.ny.abs(), 3)
         .expect("failed to create output dataset");
 
-    ds.set_projection(&projection).unwrap();
-    ds.set_geo_transform(&swath.gt).unwrap();
+    ds.set_projection(&projection)?;
+    ds.set_geo_transform(&swath.gt)?;
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band1)
         .map_err(|e| Error::from(e))
-        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))
-        .unwrap();
+        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))?;
     ds.write_raster(
         1,
         (0, 0),
         (swath.nx.abs() as usize, swath.ny.abs() as usize),
         &buf,
-    )
-    .unwrap();
+    )?;
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band2)
         .map_err(|e| Error::from(e))
-        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))
-        .unwrap();
+        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))?;
     ds.write_raster(
         2,
         (0, 0),
         (swath.nx.abs() as usize, swath.ny.abs() as usize),
         &buf,
-    )
-    .unwrap();
+    )?;
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band3)
         .map_err(|e| Error::from(e))
-        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))
-        .unwrap();
+        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))?;
     ds.write_raster(
         3,
         (0, 0),
         (swath.nx.abs() as usize, swath.ny.abs() as usize),
         &buf,
-    )
-    .unwrap();
+    )?;
 
     Ok(ds)
 }
