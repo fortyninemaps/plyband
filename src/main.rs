@@ -67,7 +67,7 @@ impl std::convert::From<TypeError> for Error {
 impl std::convert::From<gdal::errors::Error> for Error {
     fn from(error: gdal::errors::Error) -> Error {
         Error {
-            msg: format!("GdalError {}", error)
+            msg: format!("GdalError {}", error),
         }
     }
 }
@@ -223,6 +223,18 @@ fn intersection(bands: &[&RasterBand]) -> Result<Swath, Error> {
     }
 }
 
+// Convert a string like `"parent/file.tif:2"` into `("parent/file.tif", 2)`
+fn split_path_band<'a>(input: &'a str) -> (&'a str, isize) {
+    let mut split = input.split(':');
+    let path = split.nth(0).unwrap();
+    let band = split
+        .nth(0)
+        .map(|s| str::parse::<isize>(s).unwrap())
+        .unwrap_or(1);
+
+    (path, band)
+}
+
 fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     output: &OutputOptions,
     swath: Swath,
@@ -354,7 +366,7 @@ fn main() {
                 .short("r")
                 .long("red")
                 .value_name("INPUT")
-                .help("Source of red channel")
+                .help("Source of red channel, with optional band split by a colon (:)")
                 .required(true)
                 .display_order(1),
         )
@@ -363,7 +375,7 @@ fn main() {
                 .short("g")
                 .long("green")
                 .value_name("INPUT")
-                .help("Source of green channel")
+                .help("Source of green channel, with optional band split by a colon (:)")
                 .required(true)
                 .display_order(2),
         )
@@ -372,7 +384,7 @@ fn main() {
                 .short("b")
                 .long("blue")
                 .value_name("INPUT")
-                .help("Source of blue channel")
+                .help("Source of blue channel, with optional band split by a colon (:)")
                 .required(true)
                 .display_order(3),
         )
@@ -392,9 +404,10 @@ fn main() {
         )
         .get_matches();
 
-    let red_input = cli.value_of("red").unwrap();
-    let green_input = cli.value_of("green").unwrap();
-    let blue_input = cli.value_of("blue").unwrap();
+    let (red_input, rb) = split_path_band(cli.value_of("red").unwrap());
+    let (green_input, gb) = split_path_band(cli.value_of("green").unwrap());
+    let (blue_input, bb) = split_path_band(cli.value_of("blue").unwrap());
+
     let output = cli.value_of("output").unwrap_or("out");
     let output_format = cli.value_of("output_format").unwrap_or("GTIFF");
 
@@ -409,9 +422,9 @@ fn main() {
         .and_then(|_| have_compatible_geotransforms(datasets))
         .unwrap();
 
-    let red_band = red_ds.rasterband(1).unwrap();
-    let green_band = green_ds.rasterband(1).unwrap();
-    let blue_band = blue_ds.rasterband(1).unwrap();
+    let red_band = red_ds.rasterband(rb).unwrap();
+    let green_band = green_ds.rasterband(gb).unwrap();
+    let blue_band = blue_ds.rasterband(bb).unwrap();
 
     let proj = red_ds.projection();
 
