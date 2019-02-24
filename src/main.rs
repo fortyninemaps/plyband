@@ -41,6 +41,13 @@ struct GeoError {
 trait Transform2 {
     fn apply(&self, pos: (isize, isize)) -> (f64, f64);
     fn invert(&self, pt: &Point) -> (f64, f64);
+
+    // Pixel size needed to include a point given a geo_transform
+    fn imsize(&self, pt: &Point) -> (isize, isize) {
+        let (nx, ny) = self.invert(pt);
+        // TODO: ceil incorrect when negative
+        (nx.ceil() as isize, ny.ceil() as isize)
+    }
 }
 
 impl Transform2 for GeoTransform {
@@ -133,13 +140,6 @@ impl Swath {
     }
 }
 
-// Pixel size needed to include a point given a geo_transform
-fn imsize(gt: GeoTransform, pt: &Point) -> (isize, isize) {
-    let (nx, ny) = gt.invert(pt);
-    // TODO: ceil incorrect when negative
-    (nx.ceil() as isize, ny.ceil() as isize)
-}
-
 // Return the rectangular swatch representing the intersection of a sequence of
 // RasterBands. The orientation will be according to the first RasterBand.
 fn intersection(bands: &[&RasterBand]) -> Result<Swath, GeoError> {
@@ -178,7 +178,7 @@ fn intersection(bands: &[&RasterBand]) -> Result<Swath, GeoError> {
             gt_fst[5],
         ];
 
-        let (nx, ny) = imsize(gt, &(*leftmost_right, *upper_bottom));
+        let (nx, ny) = gt.imsize(&(*leftmost_right, *upper_bottom));
 
         Ok(Swath {
             nx,
