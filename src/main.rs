@@ -204,18 +204,17 @@ where
     I: Iterator<Item = T>,
     T: Eq,
 {
-    let mut last: Option<T> = None;
-    for thing in things {
-        let same = match last {
-            Some(t) => t == thing,
-            None => true
-        };
-        if !same {
-            return false;
+
+    let (result, _) = things.skip(1).fold(
+        (true, None),
+        |(b, left_opt), right| if b {
+            (left_opt.is_none() || left_opt.unwrap() == right, Some(right))
+        } else {
+            (b, Some(right))
         }
-        last = Some(thing);
-    }
-    true
+    );
+
+    result
 }
 
 fn have_same_projection(datasets: &[&Dataset]) -> Result<(), String> {
@@ -253,15 +252,17 @@ fn have_compatible_geotransforms(datasets: &[&Dataset]) -> Result<(), String> {
     if datasets.len() == 0 {
         return Err("empty dataset list".to_string());
     }
-    for (i, dataset) in datasets.iter().enumerate() {
-        if i != 0 {
-            if gt_compatible(datasets[i-1].geo_transform().unwrap(), dataset.geo_transform().unwrap()).is_err() {
-                return Err("mismatching geotransforms".to_string());
-            }
-        }
-    }
 
-    Ok(())
+    let (result, _) = datasets.iter().fold(
+        (Ok(()), datasets[0].geo_transform().unwrap()),
+        |(acc, left), right_ds| if acc.is_ok() {
+            let right = right_ds.geo_transform().unwrap();
+            (gt_compatible(left, right), right)
+        } else {
+            (acc, left)
+        });
+
+    result
 }
 
 fn main() {
