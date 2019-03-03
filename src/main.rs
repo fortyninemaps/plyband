@@ -1,4 +1,6 @@
-use std::cmp::Ordering;
+mod types;
+mod validation;
+
 use std::path::Path;
 
 use gdal::raster::dataset::{Buffer, GeoTransform};
@@ -11,24 +13,7 @@ use gdal_typed_rasterband::typed_rasterband::{GdalFrom, TypeError, TypedRasterBa
 
 use clap::{App, Arg};
 
-#[derive(PartialEq, PartialOrd, Clone, Copy)]
-struct RealF64 {
-    v: f64,
-}
-
-impl Ord for RealF64 {
-    fn cmp(&self, other: &Self) -> Ordering {
-        if self.v.is_nan() {
-            Ordering::Equal
-        } else {
-            self.partial_cmp(other).unwrap_or(Ordering::Equal)
-        }
-    }
-}
-
-impl Eq for RealF64 {}
-
-type Point = (RealF64, RealF64);
+use types::{RealF64, Transform2};
 
 struct OutputOptions {
     filename: String,
@@ -71,51 +56,6 @@ impl std::convert::From<gdal::errors::Error> for Error {
         }
     }
 }
-
-trait Transform2 {
-    fn apply(&self, pos: (isize, isize)) -> (f64, f64);
-    fn invert(&self, pt: &Point) -> (f64, f64);
-
-    // Pixel size needed to include a point given a geo_transform
-    fn imsize(&self, pt: &Point) -> (isize, isize) {
-        let (nx, ny) = self.invert(pt);
-        // TODO: ceil incorrect when negative
-        (nx.ceil() as isize, ny.ceil() as isize)
-    }
-}
-
-impl Transform2 for GeoTransform {
-    fn apply(&self, pos: (isize, isize)) -> (f64, f64) {
-        let nx = pos.0 as f64;
-        let ny = pos.1 as f64;
-        let x = self[0] + nx * self[1] + ny * self[2];
-        let y = self[3] + nx * self[4] + ny * self[5];
-        (x, y)
-    }
-
-    fn invert(&self, pt: &Point) -> (f64, f64) {
-        let a = self[0];
-        let b = self[1];
-        let c = self[2];
-        let d = self[3];
-        let e = self[4];
-        let f = self[5];
-
-        let x = pt.0.v;
-        let y = pt.1.v;
-
-        if b != 0.0 {
-            let ny = (b * y - b * d - e * x + e * a) / (b * f - e * c);
-            let nx = (x - a - ny * c) / b;
-            (nx, ny)
-        } else {
-            let ny = (e * x - e * a - b * y + b * d) / (e * c - b * f);
-            let nx = (y - d - ny * f) / e;
-            (nx, ny)
-        }
-    }
-}
-
 #[derive(Debug)]
 struct Swath {
     nx: isize,
@@ -285,77 +225,6 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     Ok(ds)
 }
 
-fn all_same<I, T>(things: I) -> bool
-where
-    I: Iterator<Item = T>,
-    T: Eq,
-{
-    let (result, _) = things.fold((true, None), |(b, left_opt), right| {
-        if b {
-            (
-                left_opt.is_none() || left_opt.unwrap() == right,
-                Some(right),
-            )
-        } else {
-            (b, Some(right))
-        }
-    });
-
-    result
-}
-
-fn have_same_projection(datasets: &[&Dataset]) -> Result<(), String> {
-    let projs = datasets.iter().map(|ds| ds.projection());
-    if all_same(projs) {
-        Ok(())
-    } else {
-        Err("Different projections".to_string())
-    }
-}
-
-fn gt_compatible(gt1: GeoTransform, gt2: GeoTransform) -> Result<(), String> {
-    let spacing_check =
-        if gt1[1] == gt2[1] && gt1[2] == gt2[2] && gt1[4] == gt2[4] && gt1[5] == gt2[5] {
-            Ok(())
-        } else {
-            return Err("non-equal spacing".to_string());
-        };
-
-    // check for integer solutions to initial offsets
-    let offset_check = {
-        let origin2 = (RealF64 { v: gt2[0] }, RealF64 { v: gt2[3] });
-        let (nx, ny) = gt1.invert(&origin2);
-
-        if (nx % 1.0 == 0.0) && (ny % 1.0 == 0.0) {
-            Ok(())
-        } else {
-            return Err("grids offset".to_string());
-        }
-    };
-
-    spacing_check.and_then(|_| offset_check)
-}
-
-fn have_compatible_geotransforms(datasets: &[&Dataset]) -> Result<(), String> {
-    if datasets.len() == 0 {
-        return Err("empty dataset list".to_string());
-    }
-
-    let (result, _) = datasets.iter().fold(
-        (Ok(()), datasets[0].geo_transform().unwrap()),
-        |(acc, left), right_ds| {
-            if acc.is_ok() {
-                let right = right_ds.geo_transform().unwrap();
-                (gt_compatible(left, right), right)
-            } else {
-                (acc, left)
-            }
-        },
-    );
-
-    result
-}
-
 fn main() {
     let cli = App::new("plyband")
         .version("0.1.0")
@@ -418,8 +287,8 @@ fn main() {
     let datasets = &[&red_ds, &green_ds, &blue_ds];
 
     // Input validation
-    have_same_projection(datasets)
-        .and_then(|_| have_compatible_geotransforms(datasets))
+    validation::have_same_projection(datasets)
+        .and_then(|_| validation::have_compatible_geotransforms(datasets))
         .unwrap();
 
     let red_band = red_ds.rasterband(rb).unwrap();
