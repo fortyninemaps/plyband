@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use gdal::raster::dataset::GeoTransform;
 
-#[derive(PartialEq, PartialOrd, Clone, Copy)]
+#[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
 pub struct RealF64 {
     pub v: f64,
 }

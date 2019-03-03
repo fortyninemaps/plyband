@@ -114,7 +114,26 @@ impl Swath {
     }
 }
 
-// Return the rectangular swatch representing the intersection of a sequence of
+fn extract_swath<T: Copy + GdalType + GdalFrom<f64>>(
+    swath: &Swath,
+    band: &TypedRasterBand<T>,
+) -> Result<Buffer<T>, Error> {
+    let top_left_point = (RealF64 { v: swath.gt[0] }, RealF64 { v: swath.gt[3] });
+
+    let (x0, y0) = band
+        .owning_dataset()
+        .geo_transform()?
+        .invert(&top_left_point);
+    let top_left_idx = (x0 as isize, y0 as isize);
+    let size = (swath.nx as usize, swath.ny as usize);
+
+    // we require inputs to have the same resolution, so the buffer size will be the same as the
+    // window read
+    let buf = band.read(top_left_idx, size, size)?;
+    Ok(buf)
+}
+
+// Return the rectangular swath representing the intersection of a sequence of
 // RasterBands. The orientation will be according to the first RasterBand.
 fn intersection(bands: &[&RasterBand]) -> Result<Swath, Error> {
     if bands.len() == 0 {
@@ -194,7 +213,7 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band1)
         .map_err(|e| Error::from(e))
-        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))?;
+        .and_then(|b| extract_swath(&swath, &b).map_err(|e| Error::from(e)))?;
     ds.write_raster(
         1,
         (0, 0),
@@ -204,7 +223,7 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band2)
         .map_err(|e| Error::from(e))
-        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))?;
+        .and_then(|b| extract_swath(&swath, &b).map_err(|e| Error::from(e)))?;
     ds.write_raster(
         2,
         (0, 0),
@@ -214,7 +233,7 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band3)
         .map_err(|e| Error::from(e))
-        .and_then(|b| b.read_band().map_err(|e| Error::from(e)))?;
+        .and_then(|b| extract_swath(&swath, &b).map_err(|e| Error::from(e)))?;
     ds.write_raster(
         3,
         (0, 0),
