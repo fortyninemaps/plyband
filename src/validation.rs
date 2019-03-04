@@ -1,7 +1,7 @@
-use gdal::raster::dataset::GeoTransform;
-use gdal::raster::Dataset;
+use gdal::raster::{Dataset, dataset::GeoTransform};
 
-use crate::types::{RealF64, Transform2};
+use crate::transform::Transform2;
+use crate::types::RealF64;
 
 fn all_same<I, T>(things: I) -> bool
 where

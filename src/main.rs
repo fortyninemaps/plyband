@@ -1,188 +1,27 @@
+mod error;
+mod swath;
+mod transform;
 mod types;
 mod validation;
 
 use std::path::Path;
 
-use gdal::raster::dataset::{Buffer, GeoTransform};
+use gdal::raster::dataset::Buffer;
 use gdal::raster::types::GdalType;
 use gdal::raster::{Dataset, Driver, RasterBand};
 
 use gdal_sys::GDALDataType;
 
-use gdal_typed_rasterband::typed_rasterband::{GdalFrom, TypeError, TypedRasterBand};
+use gdal_typed_rasterband::typed_rasterband::{GdalFrom, TypedRasterBand};
 
 use clap::{App, Arg};
 
-use types::{RealF64, Transform2};
+use error::Error;
+use swath::Swath;
 
 struct OutputOptions {
     filename: String,
     format: String,
-}
-
-#[derive(Debug)]
-struct Error {
-    msg: String,
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.msg)
-    }
-}
-
-impl std::error::Error for Error {
-    fn description(&self) -> &str {
-        &self.msg
-    }
-
-    fn cause(&self) -> Option<&std::error::Error> {
-        None
-    }
-}
-
-impl std::convert::From<TypeError> for Error {
-    fn from(_error: TypeError) -> Error {
-        Error {
-            msg: "band TypeError".to_string(),
-        }
-    }
-}
-
-impl std::convert::From<gdal::errors::Error> for Error {
-    fn from(error: gdal::errors::Error) -> Error {
-        Error {
-            msg: format!("GdalError {}", error),
-        }
-    }
-}
-#[derive(Debug)]
-struct Swath {
-    nx: isize,
-    ny: isize,
-    gt: GeoTransform,
-    proj: String,
-}
-
-impl Swath {
-    fn from_band(band: &RasterBand) -> Swath {
-        let size = band.owning_dataset().size();
-        let gt = band
-            .owning_dataset()
-            .geo_transform()
-            .expect("band has no associated geotransform");
-        let proj = band.owning_dataset().projection();
-
-        Swath {
-            nx: size.0 as isize,
-            ny: size.1 as isize,
-            gt,
-            proj,
-        }
-    }
-
-    fn corners(&self) -> Vec<(RealF64, RealF64)> {
-        let pt0 = self.gt.apply((0, 0));
-        let pt1 = self.gt.apply((self.nx, 0));
-        let pt2 = self.gt.apply((self.nx, self.ny));
-        let pt3 = self.gt.apply((0, self.ny));
-        vec![pt0, pt1, pt2, pt3]
-            .iter()
-            .map(|pt| (RealF64 { v: pt.0 }, RealF64 { v: pt.1 }))
-            .collect()
-    }
-
-    fn left_extreme(&self) -> RealF64 {
-        let pts = self.corners();
-        let extreme = pts.iter().min_by_key(|a| a.0).unwrap();
-        extreme.0
-    }
-
-    fn right_extreme(&self) -> RealF64 {
-        let pts = self.corners();
-        let extreme = pts.iter().max_by_key(|a| a.0).unwrap();
-        extreme.0
-    }
-
-    fn bottom_extreme(&self) -> RealF64 {
-        let pts = self.corners();
-        let extreme = pts.iter().min_by_key(|a| a.1).unwrap();
-        extreme.1
-    }
-
-    fn top_extreme(&self) -> RealF64 {
-        let pts = self.corners();
-        let extreme = pts.iter().max_by_key(|a| a.1).unwrap();
-        extreme.1
-    }
-}
-
-fn extract_swath<T: Copy + GdalType + GdalFrom<f64>>(
-    swath: &Swath,
-    band: &TypedRasterBand<T>,
-) -> Result<Buffer<T>, Error> {
-    let top_left_coord = (RealF64 { v: swath.gt[0] }, RealF64 { v: swath.gt[3] });
-
-    let (ix, iy) = band
-        .owning_dataset()
-        .geo_transform()?
-        .invert(&top_left_coord);
-    let top_left_idx = (ix as isize, iy as isize);
-    let size = (swath.nx as usize, swath.ny as usize);
-
-    // we require inputs to have the same resolution, so the buffer size will be the same as the
-    // window read
-    let buf = band.read(top_left_idx, size, size)?;
-    Ok(buf)
-}
-
-// Return the rectangular swath representing the intersection of a sequence of
-// RasterBands. The orientation will be according to the first RasterBand.
-fn intersection(bands: &[&RasterBand]) -> Result<Swath, Error> {
-    if bands.len() == 0 {
-        return Err(Error {
-            msg: "No bands provided".to_string(),
-        });
-    }
-
-    let swaths: Vec<Swath> = bands.iter().map(|b| Swath::from_band(b)).collect();
-
-    let left: Vec<RealF64> = swaths.iter().map(|b| b.left_extreme()).collect();
-    let right: Vec<RealF64> = swaths.iter().map(|b| b.right_extreme()).collect();
-    let bottom: Vec<RealF64> = swaths.iter().map(|b| b.bottom_extreme()).collect();
-    let top: Vec<RealF64> = swaths.iter().map(|b| b.top_extreme()).collect();
-
-    let rightmost_left = left.iter().max().unwrap();
-    let leftmost_right = right.iter().min().unwrap();
-    let upper_bottom = bottom.iter().max().unwrap();
-    let lower_top = top.iter().min().unwrap();
-
-    if (rightmost_left > leftmost_right) || (upper_bottom > lower_top) {
-        Err(Error {
-            msg: "No valid intersection between bands".to_string(),
-        })
-    } else {
-        let gt_fst = bands[0].owning_dataset().geo_transform().unwrap();
-        let proj_fst = bands[0].owning_dataset().projection();
-
-        let gt: [f64; 6] = [
-            rightmost_left.v,
-            gt_fst[1],
-            gt_fst[2],
-            lower_top.v,
-            gt_fst[4],
-            gt_fst[5],
-        ];
-
-        let (nx, ny) = gt.imsize(&(*leftmost_right, *upper_bottom));
-
-        Ok(Swath {
-            nx,
-            ny,
-            gt,
-            proj: proj_fst,
-        })
-    }
 }
 
 // Convert a string like `"parent/file.tif:2"` into `("parent/file.tif", 2)`
@@ -199,7 +38,7 @@ fn split_path_band<'a>(input: &'a str) -> (&'a str, isize) {
 
 fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     output: &OutputOptions,
-    swath: Swath,
+    sw: Swath,
     projection: String,
     band1: &RasterBand,
     band2: &RasterBand,
@@ -208,39 +47,39 @@ fn ply_bands<T: Copy + GdalType + GdalFrom<f64>>(
     let driver = Driver::get(&output.format).unwrap();
 
     let ds = driver
-        .create_with_band_type::<T>(&output.filename, swath.nx.abs(), swath.ny.abs(), 3)
+        .create_with_band_type::<T>(&output.filename, sw.nx.abs(), sw.ny.abs(), 3)
         .expect("failed to create output dataset");
 
     ds.set_projection(&projection)?;
-    ds.set_geo_transform(&swath.gt)?;
+    ds.set_geo_transform(&sw.gt)?;
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band1)
         .map_err(|e| Error::from(e))
-        .and_then(|b| extract_swath(&swath, &b).map_err(|e| Error::from(e)))?;
+        .and_then(|b| swath::extract(&sw, &b).map_err(|e| Error::from(e)))?;
     ds.write_raster(
         1,
         (0, 0),
-        (swath.nx.abs() as usize, swath.ny.abs() as usize),
+        (sw.nx.abs() as usize, sw.ny.abs() as usize),
         &buf,
     )?;
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band2)
         .map_err(|e| Error::from(e))
-        .and_then(|b| extract_swath(&swath, &b).map_err(|e| Error::from(e)))?;
+        .and_then(|b| swath::extract(&sw, &b).map_err(|e| Error::from(e)))?;
     ds.write_raster(
         2,
         (0, 0),
-        (swath.nx.abs() as usize, swath.ny.abs() as usize),
+        (sw.nx.abs() as usize, sw.ny.abs() as usize),
         &buf,
     )?;
 
     let buf: Buffer<T> = TypedRasterBand::from_rasterband(band3)
         .map_err(|e| Error::from(e))
-        .and_then(|b| extract_swath(&swath, &b).map_err(|e| Error::from(e)))?;
+        .and_then(|b| swath::extract(&sw, &b).map_err(|e| Error::from(e)))?;
     ds.write_raster(
         3,
         (0, 0),
-        (swath.nx.abs() as usize, swath.ny.abs() as usize),
+        (sw.nx.abs() as usize, sw.ny.abs() as usize),
         &buf,
     )?;
 
@@ -326,7 +165,7 @@ fn main() {
 
     let proj = red_ds.projection();
 
-    let swath = intersection(&[&red_band, &green_band, &blue_band])
+    let sw = swath::intersection(&[&red_band, &green_band, &blue_band])
         .expect("Failed to compute intersection between bands");
 
     let output_options = OutputOptions {
@@ -339,7 +178,7 @@ fn main() {
     let result = match pixel_type {
         GDALDataType::GDT_Byte => ply_bands::<u8>(
             &output_options,
-            swath,
+            sw,
             proj,
             &red_band,
             &green_band,
@@ -347,7 +186,7 @@ fn main() {
         ),
         GDALDataType::GDT_UInt16 => ply_bands::<u16>(
             &output_options,
-            swath,
+            sw,
             proj,
             &red_band,
             &green_band,
@@ -355,7 +194,7 @@ fn main() {
         ),
         GDALDataType::GDT_UInt32 => ply_bands::<u32>(
             &output_options,
-            swath,
+            sw,
             proj,
             &red_band,
             &green_band,
@@ -363,7 +202,7 @@ fn main() {
         ),
         GDALDataType::GDT_Int16 => ply_bands::<i16>(
             &output_options,
-            swath,
+            sw,
             proj,
             &red_band,
             &green_band,
@@ -371,7 +210,7 @@ fn main() {
         ),
         GDALDataType::GDT_Int32 => ply_bands::<i32>(
             &output_options,
-            swath,
+            sw,
             proj,
             &red_band,
             &green_band,
@@ -379,7 +218,7 @@ fn main() {
         ),
         GDALDataType::GDT_Float32 => ply_bands::<f32>(
             &output_options,
-            swath,
+            sw,
             proj,
             &red_band,
             &green_band,
@@ -387,26 +226,22 @@ fn main() {
         ),
         GDALDataType::GDT_Float64 => ply_bands::<f64>(
             &output_options,
-            swath,
+            sw,
             proj,
             &red_band,
             &green_band,
             &blue_band,
         ),
-        _ => Err(Error {
-            msg: format!("Unhandled band type {}", pixel_type).to_string(),
-        }),
+        _ => Err(Error::from_string(
+            format!("Unhandled band type {}", pixel_type).to_string(),
+        )),
     };
 
     std::process::exit(match result {
         Ok(_) => 0,
         Err(error) => {
-            eprintln!("{}", error.msg);
+            eprintln!("{}", error);
             1
         }
     });
-
-    // TODO:
-    // - windowed read/write
-    // - inputs in different projections
 }
