@@ -118,13 +118,13 @@ fn extract_swath<T: Copy + GdalType + GdalFrom<f64>>(
     swath: &Swath,
     band: &TypedRasterBand<T>,
 ) -> Result<Buffer<T>, Error> {
-    let top_left_point = (RealF64 { v: swath.gt[0] }, RealF64 { v: swath.gt[3] });
+    let top_left_coord = (RealF64 { v: swath.gt[0] }, RealF64 { v: swath.gt[3] });
 
-    let (x0, y0) = band
+    let (ix, iy) = band
         .owning_dataset()
         .geo_transform()?
-        .invert(&top_left_point);
-    let top_left_idx = (x0 as isize, y0 as isize);
+        .invert(&top_left_coord);
+    let top_left_idx = (ix as isize, iy as isize);
     let size = (swath.nx as usize, swath.ny as usize);
 
     // we require inputs to have the same resolution, so the buffer size will be the same as the
@@ -150,9 +150,9 @@ fn intersection(bands: &[&RasterBand]) -> Result<Swath, Error> {
     let top: Vec<RealF64> = swaths.iter().map(|b| b.top_extreme()).collect();
 
     let rightmost_left = left.iter().max().unwrap();
-    let leftmost_right = right.iter().max().unwrap();
+    let leftmost_right = right.iter().min().unwrap();
     let upper_bottom = bottom.iter().max().unwrap();
-    let lower_top = top.iter().max().unwrap();
+    let lower_top = top.iter().min().unwrap();
 
     if (rightmost_left > leftmost_right) || (upper_bottom > lower_top) {
         Err(Error {
@@ -387,7 +387,13 @@ fn main() {
         }),
     };
 
-    result.unwrap();
+    std::process::exit(match result {
+        Ok(_) => 0,
+        Err(error) => {
+            eprintln!("{}", error.msg);
+            1
+        }
+    });
 
     // TODO:
     // - windowed read/write
