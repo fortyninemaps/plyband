@@ -67,7 +67,10 @@ struct Swath {
 impl Swath {
     fn from_band(band: &RasterBand) -> Swath {
         let size = band.owning_dataset().size();
-        let gt = band.owning_dataset().geo_transform().unwrap();
+        let gt = band
+            .owning_dataset()
+            .geo_transform()
+            .expect("band has no associated geotransform");
         let proj = band.owning_dataset().projection();
 
         Swath {
@@ -306,9 +309,16 @@ fn main() {
     let datasets = &[&red_ds, &green_ds, &blue_ds];
 
     // Input validation
-    validation::have_same_projection(datasets)
-        .and_then(|_| validation::have_compatible_geotransforms(datasets))
-        .unwrap();
+    let checks = validation::have_same_projection(datasets)
+        .and_then(|_| validation::have_compatible_geotransforms(datasets));
+
+    match checks {
+        Ok(()) => (),
+        Err(msg) => {
+            eprintln!("Validation failed:\n{}", msg);
+            std::process::exit(1);
+        }
+    };
 
     let red_band = red_ds.rasterband(rb).unwrap();
     let green_band = green_ds.rasterband(gb).unwrap();
@@ -316,7 +326,8 @@ fn main() {
 
     let proj = red_ds.projection();
 
-    let swath = intersection(&[&red_band, &green_band, &blue_band]).unwrap();
+    let swath = intersection(&[&red_band, &green_band, &blue_band])
+        .expect("Failed to compute intersection between bands");
 
     let output_options = OutputOptions {
         filename: output.to_string(),
